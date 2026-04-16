@@ -1,8 +1,10 @@
 node_modules/
 dist/
+release/
 .env
 server/data/
 server/uploads/
 *.db
 *.db-shm
 *.db-wal
+DeepFocus Setup.exe

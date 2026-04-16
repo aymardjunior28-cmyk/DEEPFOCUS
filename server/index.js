@@ -5,16 +5,19 @@ import jwt from "jsonwebtoken";
 import multer from "multer";
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
-import pool from "./db.js";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import db, { initializeGlobalWorkspace } from "./db.js";
 
 const app = express();
 const PORT = process.env.PORT || 3001;
-const JWT_SECRET = process.env.JWT_SECRET || "trello2-local-secret";
+const JWT_SECRET = process.env.JWT_SECRET || "deepfocus-local-secret";
 const MAX_ADDITIONAL_USERS = 5;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const uploadsDir = path.join(__dirname, "uploads");
+const uploadsDir = process.env.APP_UPLOADS_DIR || path.join(__dirname, "uploads");
 const streams = new Map();
+const onlineUsers = new Map(); // { workspaceId: Set<userId> }
+let GLOBAL_WORKSPACE_ID = null; // ID du workspace global partagé
+let httpServer = null;
 
 if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
@@ -71,6 +74,39 @@ function createId(prefix) {
   return `${prefix}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+function stableMemberId(userId) {
+  return `member-${userId}`;
+}
+
+function normalizeRole(role) {
+  return String(role || "").toLowerCase() === "owner" ? "Owner" : "member";
+}
+
+function cleanupRemovedMemberReferences(workspace, memberToRemove) {
+  const removedMemberId = memberToRemove?.id;
+  const removedUserId = memberToRemove?.userId;
+
+  workspace.tasks = (workspace.tasks || []).map((task) => ({
+    ...task,
+    assignedTo: (task.assignedTo || []).filter((memberId) => memberId !== removedMemberId)
+  }));
+
+  for (const board of workspace.boards || []) {
+    for (const list of board.lists || []) {
+      for (const card of list.cards || []) {
+        card.members = (card.members || []).filter((memberId) => memberId !== removedMemberId);
+      }
+    }
+  }
+
+  workspace.notifications = (workspace.notifications || []).filter((notification) => {
+    if (removedUserId != null && notification.userId === removedUserId) {
+      return false;
+    }
+    return notification.memberId !== removedMemberId;
+  });
+}
+
 function createInviteCode() {
   return `JOIN-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
 }
@@ -117,6 +153,9 @@ function createDefaultWorkspace(name) {
   return {
     members,
     labels,
+    tasks: [],
+    invitations: [],
+    notifications: [],
     activity: [{ id: createId("activity"), text: "Workspace created", createdAt: new Date().toISOString() }],
     boards: [
       {
@@ -158,7 +197,7 @@ function createDefaultWorkspace(name) {
 }
 
 async function getWorkspaceRowByUserId(userId) {
-  const result = await pool.query(
+  const result = await db.query(
     `SELECT w.*
      FROM users u
      JOIN workspaces w ON w.id = u.active_workspace_id
@@ -169,8 +208,13 @@ async function getWorkspaceRowByUserId(userId) {
 }
 
 async function syncWorkspaceMembers(workspaceRow) {
+  if (!workspaceRow || !workspaceRow.data_json) {
+    console.warn("⚠️ Workspace invalide:", workspaceRow);
+    return { boards: [], members: [], invitations: [], activity: [] };
+  }
+  
   const workspace = JSON.parse(workspaceRow.data_json);
-  const result = await pool.query(
+  const result = await db.query(
     `SELECT u.id AS user_id, u.name, u.email, wm.role
      FROM workspace_members wm
      JOIN users u ON u.id = wm.user_id
@@ -179,18 +223,27 @@ async function syncWorkspaceMembers(workspaceRow) {
   );
   const members = result.rows;
 
-  const byUser = new Map(workspace.members.filter((m) => m.userId).map((m) => [m.userId, m]));
+  workspace.members = (workspace.members || [])
+    .filter((member) => member.userId !== null && member.userId !== undefined)
+    .map((member) => ({
+      ...member,
+      id: member.id || stableMemberId(member.userId),
+      role: normalizeRole(member.role)
+    }));
+  
+  const byUser = new Map(workspace.members.map((m) => [m.userId, m]));
   for (const user of members) {
     if (byUser.has(user.user_id)) {
       const existing = byUser.get(user.user_id);
+      existing.id = existing.id || stableMemberId(user.user_id);
       existing.name = user.name;
-      existing.role = user.role;
+      existing.role = normalizeRole(user.role);
     } else {
       workspace.members.push({
-        id: createId("member"),
+        id: stableMemberId(user.user_id),
         userId: user.user_id,
         name: user.name,
-        role: user.role,
+        role: normalizeRole(user.role),
         color: ["#0f766e", "#2563eb", "#7c3aed", "#ea580c"][user.user_id % 4]
       });
     }
@@ -199,17 +252,24 @@ async function syncWorkspaceMembers(workspaceRow) {
 }
 
 async function saveWorkspaceById(workspaceId, workspace) {
-  await pool.query(
+  await db.query(
     "UPDATE workspaces SET data_json = $1, updated_at = NOW() WHERE id = $2",
     [JSON.stringify(workspace), workspaceId]
   );
 }
 
+function findTaskById(workspace, taskId) {
+  workspace.tasks = workspace.tasks || [];
+  return workspace.tasks.find((task) => task.id === taskId);
+}
+
 async function broadcastWorkspace(workspaceId) {
-  const result = await pool.query("SELECT * FROM workspaces WHERE id = $1", [workspaceId]);
+  const result = await db.query("SELECT * FROM workspaces WHERE id = $1", [workspaceId]);
   const row = result.rows[0];
   if (!row) return;
   const workspace = await syncWorkspaceMembers(row);
+  const online = onlineUsers.get(workspaceId) || new Set();
+  workspace.onlineUserIds = Array.from(online);
   const payload = JSON.stringify({ workspace, inviteCode: row.invite_code });
   const clients = streams.get(workspaceId) || new Set();
   for (const res of clients) {
@@ -249,31 +309,27 @@ app.post("/api/auth/register", async (req, res, next) => {
     }
 
     const safeEmail = email.trim().toLowerCase();
-    const existing = await pool.query("SELECT id FROM users WHERE email = $1", [safeEmail]);
+    const existing = await db.query("SELECT id FROM users WHERE email = $1", [safeEmail]);
     if (existing.rows.length > 0) return res.status(409).json({ error: "Cet email existe deja" });
 
+    // Utiliser le workspace global (ID = 1)
+    const globalWorkspaceId = GLOBAL_WORKSPACE_ID || 1;
+
     const passwordHash = await bcrypt.hash(password, 10);
-    const userResult = await pool.query(
-      "INSERT INTO users (name, email, password_hash) VALUES ($1, $2, $3) RETURNING id",
-      [name.trim(), safeEmail, passwordHash]
+    const userResult = await db.query(
+      "INSERT INTO users (name, email, password_hash, active_workspace_id) VALUES ($1, $2, $3, $4) RETURNING id",
+      [name.trim(), safeEmail, passwordHash, globalWorkspaceId]
     );
     const userId = userResult.rows[0].id;
 
-    const workspace = createDefaultWorkspace(name.trim());
-    workspace.members[0].userId = userId;
-    const inviteCode = createInviteCode();
-
-    const workspaceResult = await pool.query(
-      "INSERT INTO workspaces (owner_user_id, invite_code, data_json) VALUES ($1, $2, $3) RETURNING id",
-      [userId, inviteCode, JSON.stringify(workspace)]
+    // Ajouter le user comme membre du workspace global
+    await db.query(
+      "INSERT INTO workspace_members (workspace_id, user_id, role) VALUES ($1, $2, 'member') ON CONFLICT DO NOTHING",
+      [globalWorkspaceId, userId]
     );
-    const workspaceId = workspaceResult.rows[0].id;
 
-    await pool.query("UPDATE users SET active_workspace_id = $1 WHERE id = $2", [workspaceId, userId]);
-    await pool.query(
-      "INSERT INTO workspace_members (workspace_id, user_id, role) VALUES ($1, $2, 'owner')",
-      [workspaceId, userId]
-    );
+    // Mettre à jour le workspace pour ajouter le membre
+    await broadcastWorkspace(globalWorkspaceId);
 
     const user = { id: userId, name: name.trim(), email: safeEmail };
     res.json({ token: signToken(user), ...(await responseForUser(user)) });
@@ -286,7 +342,7 @@ app.post("/api/auth/login", async (req, res, next) => {
   try {
     const { email, password } = req.body ?? {};
     const safeEmail = (email || "").trim().toLowerCase();
-    const result = await pool.query("SELECT * FROM users WHERE email = $1", [safeEmail]);
+    const result = await db.query("SELECT * FROM users WHERE email = $1", [safeEmail]);
     const user = result.rows[0];
     if (!user) return res.status(401).json({ error: "Identifiants invalides" });
 
@@ -301,7 +357,7 @@ app.post("/api/auth/login", async (req, res, next) => {
 
 app.get("/api/auth/me", auth, async (req, res, next) => {
   try {
-    const result = await pool.query("SELECT id, name, email FROM users WHERE id = $1", [req.user.userId]);
+    const result = await db.query("SELECT id, name, email FROM users WHERE id = $1", [req.user.userId]);
     const user = result.rows[0];
     if (!user) return res.status(404).json({ error: "Utilisateur introuvable" });
     res.json(await responseForUser(user));
@@ -309,21 +365,38 @@ app.get("/api/auth/me", auth, async (req, res, next) => {
     next(err);
   }
 });
+app.delete("/api/auth/delete", auth, async (req, res, next) => {
+  try {
+    const userId = req.user.userId;
 
+    // Enlever le user du workspace global
+    await db.query("DELETE FROM workspace_members WHERE user_id = $1", [userId]);
+    await db.query("DELETE FROM users WHERE id = $1", [userId]);
+    
+    // Broadcaster la mise à jour
+    if (GLOBAL_WORKSPACE_ID) {
+      await broadcastWorkspace(GLOBAL_WORKSPACE_ID);
+    }
+    
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
 // ─── Routes Workspace ────────────────────────────────────────────────────────
 
 app.post("/api/workspace/join", auth, async (req, res, next) => {
   try {
     const inviteCode = String(req.body?.inviteCode || "").trim().toUpperCase();
-    const rowResult = await pool.query("SELECT * FROM workspaces WHERE invite_code = $1", [inviteCode]);
+    const rowResult = await db.query("SELECT * FROM workspaces WHERE invite_code = $1", [inviteCode]);
     const row = rowResult.rows[0];
     if (!row) return res.status(404).json({ error: "Code invalide" });
 
-    const existingMembership = await pool.query(
+    const existingMembership = await db.query(
       "SELECT 1 FROM workspace_members WHERE workspace_id = $1 AND user_id = $2",
       [row.id, req.user.userId]
     );
-    const totalMembersResult = await pool.query(
+    const totalMembersResult = await db.query(
       "SELECT COUNT(*) AS count FROM workspace_members WHERE workspace_id = $1",
       [row.id]
     );
@@ -333,13 +406,13 @@ app.post("/api/workspace/join", auth, async (req, res, next) => {
       return res.status(409).json({ error: "Limite de 5 utilisateurs supplementaires atteinte" });
     }
 
-    await pool.query("UPDATE users SET active_workspace_id = $1 WHERE id = $2", [row.id, req.user.userId]);
-    await pool.query(
+    await db.query("UPDATE users SET active_workspace_id = $1 WHERE id = $2", [row.id, req.user.userId]);
+    await db.query(
       "INSERT INTO workspace_members (workspace_id, user_id, role) VALUES ($1, $2, 'member') ON CONFLICT DO NOTHING",
       [row.id, req.user.userId]
     );
 
-    const userResult = await pool.query("SELECT id, name, email FROM users WHERE id = $1", [req.user.userId]);
+    const userResult = await db.query("SELECT id, name, email FROM users WHERE id = $1", [req.user.userId]);
     const user = userResult.rows[0];
     await broadcastWorkspace(row.id);
     res.json(await responseForUser(user));
@@ -362,18 +435,38 @@ app.get("/api/workspace/stream", async (req, res) => {
     });
 
     const workspaceId = workspaceRow.id;
+    const userId = payload.userId;
+    
+    // Ajouter utilisateur à online
+    const online = onlineUsers.get(workspaceId) || new Set();
+    online.add(userId);
+    onlineUsers.set(workspaceId, online);
+    
     const group = streams.get(workspaceId) || new Set();
     group.add(res);
     streams.set(workspaceId, group);
 
     const workspace = await syncWorkspaceMembers(workspaceRow);
+    workspace.onlineUserIds = Array.from(online);
     res.write(`data: ${JSON.stringify({ workspace, inviteCode: workspaceRow.invite_code })}\n\n`);
 
     req.on("close", () => {
-      const current = streams.get(workspaceId);
-      if (!current) return;
-      current.delete(res);
-      if (!current.size) streams.delete(workspaceId);
+      // Enlever utilisateur de online
+      const current = onlineUsers.get(workspaceId);
+      if (current) {
+        current.delete(userId);
+        if (current.size === 0) {
+          onlineUsers.delete(workspaceId);
+        }
+      }
+      
+      const streamGroup = streams.get(workspaceId);
+      if (!streamGroup) return;
+      streamGroup.delete(res);
+      if (!streamGroup.size) streams.delete(workspaceId);
+      
+      // Broadcaster la mise à jour
+      broadcastWorkspace(workspaceId);
     });
   } catch {
     res.status(401).end();
@@ -434,8 +527,409 @@ app.post("/api/attachments", auth, withCurrentWorkspace, upload.single("file"), 
   }
 });
 
+// ─── Routes Tâches (Planning) ────────────────────────────────────────────────
+
+app.post("/api/tasks/create", auth, withCurrentWorkspace, async (req, res, next) => {
+  try {
+    const { title, description, startDate, endDate, assignedTo = [], priority = "medium" } = req.body ?? {};
+    if (!title || !startDate) {
+      return res.status(400).json({ error: "Titre et date de début requis" });
+    }
+
+    const task = {
+      id: createId("task"),
+      title: title.trim(),
+      description: description?.trim() || "",
+      startDate,
+      endDate: endDate || startDate,
+      priority,
+      assignedTo: Array.isArray(assignedTo) ? assignedTo : [],
+      createdBy: req.user.userId,
+      createdAt: new Date().toISOString(),
+      completed: false,
+      attachments: [],
+      comments: []
+    };
+
+    req.workspace.tasks = req.workspace.tasks || [];
+    req.workspace.tasks.push(task);
+
+    // Créer des notifications pour les utilisateurs assignés
+    for (const memberId of task.assignedTo) {
+      const member = req.workspace.members.find(m => m.id === memberId);
+      if (member?.userId) {
+        const notification = {
+          id: createId("notif"),
+          userId: member.userId,
+          taskId: task.id,
+          type: "task_assigned",
+          message: `Vous avez été assigné à : ${title}`,
+          read: false,
+          createdAt: new Date().toISOString()
+        };
+        req.workspace.notifications = req.workspace.notifications || [];
+        req.workspace.notifications.push(notification);
+      }
+    }
+
+    await saveWorkspaceById(req.workspaceRow.id, req.workspace);
+    await broadcastWorkspace(req.workspaceRow.id);
+    res.json({ task });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post("/api/tasks/:taskId/attachments", auth, withCurrentWorkspace, upload.single("file"), async (req, res, next) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: "Fichier requis" });
+    }
+
+    const task = findTaskById(req.workspace, req.params.taskId);
+    if (!task) {
+      fs.unlinkSync(req.file.path);
+      return res.status(404).json({ error: "Tâche introuvable" });
+    }
+
+    const userMember = req.workspace.members.find((member) => member.userId === req.user.userId);
+    const isCreator = task.createdBy === req.user.userId;
+    const isAssigned = task.assignedTo.includes(userMember?.id);
+
+    if (!isCreator && !isAssigned) {
+      fs.unlinkSync(req.file.path);
+      return res.status(403).json({ error: "Accès refusé" });
+    }
+
+    task.attachments = task.attachments || [];
+    task.attachments.push({
+      id: createId("taskfile"),
+      name: req.file.originalname,
+      size: req.file.size,
+      mimeType: req.file.mimetype,
+      url: `/uploads/${req.file.filename}`,
+      createdAt: new Date().toISOString()
+    });
+
+    await saveWorkspaceById(req.workspaceRow.id, req.workspace);
+    await broadcastWorkspace(req.workspaceRow.id);
+    res.json({ task, attachment: task.attachments.at(-1) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.put("/api/tasks/:taskId", auth, withCurrentWorkspace, async (req, res, next) => {
+  try {
+    const { title, description, startDate, endDate, assignedTo, priority, completed } = req.body ?? {};
+    const task = findTaskById(req.workspace, req.params.taskId);
+    
+    if (!task) {
+      return res.status(404).json({ error: "Tâche introuvable" });
+    }
+
+    // Vérifier permissions : créateur ou assigné
+    const userMember = req.workspace.members.find(m => m.userId === req.user.userId);
+    const isCreator = task.createdBy === req.user.userId;
+    const isAssigned = task.assignedTo.includes(userMember?.id);
+    
+    if (!isCreator && !isAssigned) {
+      return res.status(403).json({ error: "Accès refusé" });
+    }
+
+    if (title !== undefined) task.title = title.trim();
+    if (description !== undefined) task.description = description.trim();
+    if (startDate !== undefined) task.startDate = startDate;
+    if (endDate !== undefined) task.endDate = endDate;
+    if (priority !== undefined) task.priority = priority;
+    if (assignedTo !== undefined) task.assignedTo = assignedTo;
+    if (completed !== undefined) task.completed = completed;
+
+    await saveWorkspaceById(req.workspaceRow.id, req.workspace);
+    await broadcastWorkspace(req.workspaceRow.id);
+    res.json({ task });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.delete("/api/tasks/:taskId", auth, withCurrentWorkspace, async (req, res, next) => {
+  try {
+    const task = findTaskById(req.workspace, req.params.taskId);
+    
+    if (!task) {
+      return res.status(404).json({ error: "Tâche introuvable" });
+    }
+
+    if (task.createdBy !== req.user.userId) {
+      return res.status(403).json({ error: "Accès refusé" });
+    }
+
+    req.workspace.tasks = req.workspace.tasks.filter(t => t.id !== req.params.taskId);
+    await saveWorkspaceById(req.workspaceRow.id, req.workspace);
+    await broadcastWorkspace(req.workspaceRow.id);
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get("/api/tasks", auth, withCurrentWorkspace, async (req, res, next) => {
+  try {
+    const { view = "all", startDate, endDate } = req.query;
+    req.workspace.tasks = req.workspace.tasks || [];
+    let tasks = [...req.workspace.tasks];
+
+    const userMember = req.workspace.members.find(m => m.userId === req.user.userId);
+    
+    // Filtrer selon le rôle
+    if (normalizeRole(userMember?.role) !== "Owner") {
+      tasks = tasks.filter(t => 
+        t.createdBy === req.user.userId || t.assignedTo.includes(userMember?.id)
+      );
+    }
+
+    // Filtrer par vue (jour/semaine/mois)
+    if (view === "day" && startDate) {
+      tasks = tasks.filter(t => t.startDate === startDate);
+    } else if (view === "week" && startDate && endDate) {
+      tasks = tasks.filter(t => t.startDate >= startDate && t.startDate <= endDate);
+    } else if (view === "month" && startDate) {
+      const month = startDate.substring(0, 7);
+      tasks = tasks.filter(t => t.startDate.substring(0, 7) === month);
+    }
+
+    res.json({ tasks });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── Routes Invitations ──────────────────────────────────────────────────────
+
+app.post("/api/invitations/send", auth, withCurrentWorkspace, async (req, res, next) => {
+  try {
+    const { email } = req.body ?? {};
+    if (!email) {
+      return res.status(400).json({ error: "Email requis" });
+    }
+
+    const userMember = req.workspace.members.find(m => m.userId === req.user.userId);
+    if (!userMember) {
+      return res.status(403).json({ error: "Vous devez être membre de l'espace" });
+    }
+
+    // Vérifier le nombre de membres
+    const totalMembers = req.workspace.members.length;
+    if (totalMembers >= MAX_ADDITIONAL_USERS + 1) {
+      return res.status(409).json({ error: `Limite de ${MAX_ADDITIONAL_USERS} utilisateurs supplémentaires atteinte` });
+    }
+
+    const invitation = {
+      id: createId("invite"),
+      email: email.trim().toLowerCase(),
+      status: "pending",
+      createdAt: new Date().toISOString(),
+      createdBy: req.user.userId
+    };
+
+    req.workspace.invitations = req.workspace.invitations || [];
+    req.workspace.invitations.push(invitation);
+
+    await saveWorkspaceById(req.workspaceRow.id, req.workspace);
+    await broadcastWorkspace(req.workspaceRow.id);
+    res.json({ invitation });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get("/api/invitations", auth, withCurrentWorkspace, async (req, res, next) => {
+  try {
+    req.workspace.invitations = req.workspace.invitations || [];
+    const userMember = req.workspace.members.find(m => m.userId === req.user.userId);
+    
+    let invitations = req.workspace.invitations;
+    if (normalizeRole(userMember?.role) !== "Owner") {
+      invitations = invitations.filter(i => i.email === req.user.email);
+    }
+
+    res.json({ invitations });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post("/api/invitations/:invitationId/accept", auth, withCurrentWorkspace, async (req, res, next) => {
+  try {
+    req.workspace.invitations = req.workspace.invitations || [];
+    const invitation = req.workspace.invitations.find(i => i.id === req.params.invitationId);
+    
+    if (!invitation) {
+      return res.status(404).json({ error: "Invitation introuvable" });
+    }
+
+    if (invitation.email !== req.user.email) {
+      return res.status(403).json({ error: "Accès refusé" });
+    }
+
+    invitation.status = "accepted";
+    
+    // Ajouter le membre
+    const newMember = {
+      id: createId("member"),
+      userId: req.user.userId,
+      name: req.user.name || req.user.email,
+      role: "member",
+      color: ["#0f766e", "#2563eb", "#7c3aed", "#ea580c"][req.user.userId % 4]
+    };
+    req.workspace.members.push(newMember);
+
+    // Créer une notification pour l'owner
+    const owner = req.workspace.members.find(m => m.role === "Owner");
+    if (owner?.userId) {
+      const notification = {
+        id: createId("notif"),
+        userId: owner.userId,
+        type: "member_joined",
+        message: `${req.user.name || req.user.email} a rejoint l'espace`,
+        read: false,
+        createdAt: new Date().toISOString()
+      };
+      req.workspace.notifications = req.workspace.notifications || [];
+      req.workspace.notifications.push(notification);
+    }
+
+    await saveWorkspaceById(req.workspaceRow.id, req.workspace);
+    await broadcastWorkspace(req.workspaceRow.id);
+    res.json({ ok: true, member: newMember });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── Route Suppression Membre ────────────────────────────────────────────────
+
+app.delete("/api/workspace/members/:memberId", auth, withCurrentWorkspace, async (req, res, next) => {
+  try {
+    const memberId = req.params.memberId;
+    const memberToRemove = req.workspace.members.find(m => m.id === memberId);
+    
+    if (!memberToRemove) {
+      return res.status(404).json({ error: "Membre introuvable" });
+    }
+
+    // Ne pas pouvoir se supprimer soi-même
+    if (memberToRemove.userId === req.user.userId) {
+      return res.status(400).json({ error: "Vous ne pouvez pas vous supprimer vous-même" });
+    }
+
+    // Enlever le membre du workspace
+    req.workspace.members = req.workspace.members.filter(m => m.id !== memberId);
+    cleanupRemovedMemberReferences(req.workspace, memberToRemove);
+    
+    // Enlever de la base de données si c'est un vrai user
+    if (memberToRemove.userId) {
+      await db.query(
+        "DELETE FROM workspace_members WHERE workspace_id = $1 AND user_id = $2",
+        [req.workspaceRow.id, memberToRemove.userId]
+      );
+    }
+
+    // Sauvegarder les changements
+    await saveWorkspaceById(req.workspaceRow.id, req.workspace);
+    
+    // Broadcaster immédiatement
+    await broadcastWorkspace(req.workspaceRow.id);
+    
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── Routes Notifications ────────────────────────────────────────────────────
+
+app.get("/api/notifications", auth, withCurrentWorkspace, async (req, res, next) => {
+  try {
+    req.workspace.notifications = req.workspace.notifications || [];
+    const notifications = req.workspace.notifications.filter(n => n.userId === req.user.userId);
+    res.json({ notifications });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.put("/api/notifications/:notificationId/read", auth, withCurrentWorkspace, async (req, res, next) => {
+  try {
+    req.workspace.notifications = req.workspace.notifications || [];
+    const notification = req.workspace.notifications.find(n => n.id === req.params.notificationId);
+    
+    if (!notification) {
+      return res.status(404).json({ error: "Notification introuvable" });
+    }
+
+    if (notification.userId !== req.user.userId) {
+      return res.status(403).json({ error: "Accès refusé" });
+    }
+
+    notification.read = true;
+    await saveWorkspaceById(req.workspaceRow.id, req.workspace);
+    await broadcastWorkspace(req.workspaceRow.id);
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.delete("/api/notifications/:notificationId", auth, withCurrentWorkspace, async (req, res, next) => {
+  try {
+    req.workspace.notifications = req.workspace.notifications || [];
+    const notification = req.workspace.notifications.find((item) => item.id === req.params.notificationId);
+
+    if (!notification) {
+      return res.status(404).json({ error: "Notification introuvable" });
+    }
+
+    if (notification.userId !== req.user.userId) {
+      return res.status(403).json({ error: "Accès refusé" });
+    }
+
+    req.workspace.notifications = req.workspace.notifications.filter(
+      (item) => item.id !== req.params.notificationId
+    );
+    await saveWorkspaceById(req.workspaceRow.id, req.workspace);
+    await broadcastWorkspace(req.workspaceRow.id);
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.delete("/api/notifications", auth, withCurrentWorkspace, async (req, res, next) => {
+  try {
+    req.workspace.notifications = (req.workspace.notifications || []).filter(
+      (notification) => notification.userId !== req.user.userId
+    );
+    await saveWorkspaceById(req.workspaceRow.id, req.workspace);
+    await broadcastWorkspace(req.workspaceRow.id);
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // ─── Route keep-alive (empêche Render de s'endormir) ───────────────────────
 app.get("/api/ping", (_req, res) => res.json({ ok: true, time: new Date().toISOString() }));
+
+// ─── Sitemap pour robots et search engines ───────────────────────────────────
+app.get("/sitemap.xml", (req, res) => {
+  const proto = String(req.headers["x-forwarded-proto"] || req.protocol).split(",")[0];
+  const host = req.get("host");
+  const baseUrl = `${proto}://${host}`;
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n  <url>\n    <loc>${baseUrl}/</loc>\n    <changefreq>daily</changefreq>\n    <priority>0.8</priority>\n  </url>\n</urlset>`;
+  res.type("application/xml").send(xml);
+});
 
 // ─── Fallback React en production ────────────────────────────────────────────
 if (process.env.NODE_ENV === "production") {
@@ -447,15 +941,59 @@ if (process.env.NODE_ENV === "production") {
 
 // ─── Gestionnaire d'erreurs global ───────────────────────────────────────────
 app.use((error, _req, res, _next) => {
+  console.error("Server error:", error);
   if (error instanceof multer.MulterError) {
     return res.status(400).json({ error: error.message });
   }
   if (error?.message) {
     return res.status(400).json({ error: error.message });
   }
-  res.status(500).json({ error: "Erreur serveur" });
+  res.status(500).json({ error: String(error) || "Erreur serveur" });
 });
 
-app.listen(PORT, () => {
-  console.log(`🚀 Trello 2 API sur http://localhost:${PORT}`);
-});
+// Initialiser le workspace global au démarrage
+async function initServer() {
+  try {
+    GLOBAL_WORKSPACE_ID = await initializeGlobalWorkspace(createDefaultWorkspace);
+  } catch (err) {
+    console.error("⚠️  Erreur initialisation workspace global:", err.message);
+    GLOBAL_WORKSPACE_ID = 1;
+  }
+}
+
+export async function startServer(port = PORT) {
+  if (httpServer) {
+    return httpServer;
+  }
+
+  await initServer();
+  await new Promise((resolve) => {
+    httpServer = app.listen(port, () => {
+      console.log(`🚀 DeepFocus API sur http://localhost:${port}`);
+      resolve();
+    });
+  });
+  return httpServer;
+}
+
+export async function stopServer() {
+  if (!httpServer) return;
+  await new Promise((resolve, reject) => {
+    httpServer.close((error) => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
+  httpServer = null;
+}
+
+const launchedDirectly = process.argv[1]
+  ? import.meta.url === pathToFileURL(process.argv[1]).href
+  : false;
+
+if (launchedDirectly) {
+  startServer().catch((error) => {
+    console.error("❌ Impossible de démarrer le serveur:", error);
+    process.exit(1);
+  });
+}

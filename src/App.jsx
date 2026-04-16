@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "./api";
+import { Dashboard } from "./Dashboard";
 
 const covers = {
   sunset: "linear-gradient(135deg, #f97316 0%, #fb7185 100%)",
@@ -26,10 +27,11 @@ function Modal({ title, children, onClose }) {
   );
 }
 
-function CardModal({ data, workspace, onClose, onUpdateCard }) {
+function CardModal({ data, workspace, onClose, onUpdateCard, onWorkspaceUpdate }) {
   const { card } = data;
   const [uploadState, setUploadState] = useState("");
   const fileInputId = `file-${card.id}`;
+  const fileInputRef = useRef(null);
 
   return (
     <Modal title={card.title} onClose={onClose}>
@@ -135,23 +137,40 @@ function CardModal({ data, workspace, onClose, onUpdateCard }) {
             <span>Pieces jointes</span>
             <div className="comment-box">
               {card.attachments.map((file) => (
-                <a key={file.id} className="attachment-link" href={file.url} target="_blank" rel="noreferrer">
-                  <strong>{file.name}</strong>
-                  <small>{file.mimeType || "fichier"}</small>
-                </a>
+                <div key={file.id} className="attachment-row">
+                  <a className="attachment-link" href={file.url} target="_blank" rel="noreferrer">
+                    <strong>{file.name}</strong>
+                    <small>{file.mimeType || "fichier"}</small>
+                  </a>
+                  <button
+                    type="button"
+                    className="text-btn danger-text"
+                    onClick={() =>
+                      onUpdateCard(card.id, (draftCard) => {
+                        draftCard.attachments = draftCard.attachments.filter((item) => item.id !== file.id);
+                      })
+                    }
+                  >
+                    Supprimer
+                  </button>
+                </div>
               ))}
               <input
                 id={fileInputId}
+                ref={fileInputRef}
                 type="file"
-                onChange={(event) => {
-                  const file = event.target.files?.[0];
+                onChange={() => {
+                  const input = fileInputRef.current;
+                  const file = input?.files?.[0];
                   if (!file) return;
                   setUploadState("uploading");
                   api
                     .uploadAttachment(card.id, file)
-                    .then(() => {
+                    .then((data) => {
                       setUploadState("done");
-                      event.target.value = "";
+                      if (data.workspace) {
+                        onWorkspaceUpdate(data.workspace);
+                      }
                     })
                     .catch((error) => setUploadState(error.message));
                 }}
@@ -260,9 +279,10 @@ function App() {
   const [modal, setModal] = useState(null);
   const [saveState, setSaveState] = useState("saved");
   const firstLoad = useRef(true);
+  const eventSourceRef = useRef(null);
 
   useEffect(() => {
-    const token = localStorage.getItem("trello2-token");
+    const token = sessionStorage.getItem("deepfocus-token");
     if (!token) {
       setSession({ status: "guest", user: null });
       return;
@@ -276,10 +296,41 @@ function App() {
         setActiveBoardId(data.workspace.boards[0]?.id || null);
       })
       .catch(() => {
-        localStorage.removeItem("trello2-token");
+        sessionStorage.removeItem("deepfocus-token");
         setSession({ status: "guest", user: null });
       });
   }, []);
+
+  // Écouter les mises à jour SSE du workspace en temps réel
+  useEffect(() => {
+    const token = sessionStorage.getItem("deepfocus-token");
+    if (!token || session.status !== "ready") return;
+
+    const eventSource = new EventSource(`/api/workspace/stream?token=${encodeURIComponent(token)}`);
+    eventSourceRef.current = eventSource;
+
+    eventSource.addEventListener("message", (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.workspace) {
+          setWorkspace(data.workspace);
+        }
+      } catch (err) {
+        console.error("Erreur parsing SSE:", err);
+      }
+    });
+
+    eventSource.addEventListener("error", () => {
+      console.error("Erreur SSE - reconnexion...");
+      eventSource.close();
+      eventSourceRef.current = null;
+    });
+
+    return () => {
+      eventSource.close();
+      eventSourceRef.current = null;
+    };
+  }, [session.status]);
 
   useEffect(() => {
     if (!workspace || session.status !== "ready") return;
@@ -343,7 +394,7 @@ function App() {
 
     task
       .then((data) => {
-        localStorage.setItem("trello2-token", data.token);
+        sessionStorage.setItem("deepfocus-token", data.token);
         setSession({ status: "ready", user: data.user });
         setWorkspace(data.workspace);
         setActiveBoardId(data.workspace.boards[0]?.id || null);
@@ -353,10 +404,36 @@ function App() {
   }
 
   function logout() {
-    localStorage.removeItem("trello2-token");
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+      eventSourceRef.current = null;
+    }
+    sessionStorage.removeItem("deepfocus-token");
     setWorkspace(null);
     setSession({ status: "guest", user: null });
     setModal(null);
+  }
+
+  function handleDeleteAccount() {
+    if (!window.confirm("Voulez-vous vraiment supprimer définitivement votre compte ?")) {
+      return;
+    }
+
+    api
+      .deleteAccount()
+      .then(() => {
+        logout();
+        alert("Compte supprimé.");
+      })
+      .catch((error) => {
+        if (error.message?.includes("Token")) {
+          logout();
+          alert("Session expirée ou invalide. Veuillez vous reconnecter pour supprimer votre compte.");
+          return;
+        }
+
+        alert(error.message || "Impossible de supprimer le compte.");
+      });
   }
 
   if (session.status === "loading") {
@@ -368,7 +445,7 @@ function App() {
       <div className="auth-shell">
         <div className="auth-panel brand">
           <video className="brand-video" src="/3.mp4" autoPlay muted loop playsInline />
-          <p className="eyebrow">Trello 2</p>
+          <p className="eyebrow">DeepFocus</p>
           <h1><strong>Une App pensée pour vous.</strong></h1>
           <p>
             Un outil de gestion de projet simple, rapide et efficace. Créez, organisez et gérez vos tâches en un clin
@@ -563,298 +640,25 @@ function App() {
   const currentCard = modal?.type === "card" ? findCard(modal.cardId) : null;
 
   return (
-    <div className="app-shell">
-      <aside className="sidebar">
-        <div className="workspace-brand">
-          <p className="eyebrow">Workspace</p>
-          <h1>Trello 2</h1>
-          <p className="muted">Connecté en tant que {session.user.name}</p>
-        </div>
-
-        <section className="sidebar-card">
-          <div className="section-row">
-            <h2>Boards</h2>
-            <button className="text-btn" type="button" onClick={() => setModal({ type: "create-board" })}>
-              Nouveau
-            </button>
-          </div>
-          <div className="board-menu">
-            {workspace.boards.map((item) => (
-              <div key={item.id} className={`board-link-wrap ${item.id === board.id ? "active" : ""}`}>
-                <button
-                  className={`board-link ${item.id === board.id ? "active" : ""}`}
-                  onClick={() => setActiveBoardId(item.id)}
-                >
-                  <span className="board-link-cover" style={{ background: covers[item.cover] }} />
-                  <span>
-                    <strong>{item.name}</strong>
-                    <small>{item.description}</small>
-                  </span>
-                </button>
-                <div className="mini-actions">
-                  <button className="text-btn" type="button" onClick={() => renameBoard(item.id)}>
-                    Renommer
-                  </button>
-                  <button className="text-btn danger-text" type="button" onClick={() => deleteBoard(item.id)}>
-                    Suppr.
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </section>
-
-        <section className="sidebar-card">
-          <h2>Filtres</h2>
-          <label>
-            <span>Recherche</span>
-            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Chercher une carte" />
-          </label>
-          <label>
-            <span>Membre</span>
-            <select value={memberFilter} onChange={(e) => setMemberFilter(e.target.value)}>
-              <option value="">Tous</option>
-              {realMembers.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            <span>Label</span>
-            <select value={labelFilter} onChange={(e) => setLabelFilter(e.target.value)}>
-              <option value="">Tous</option>
-              {workspace.labels.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.name}
-                </option>
-              ))}
-            </select>
-          </label>
-        </section>
-
-        <section className="sidebar-card">
-          <div className="section-row">
-            <h2>Équipe</h2>
-            <span className={`sync-state ${saveState}`}>
-              {saveState === "saving" ? "Sync..." : saveState === "saved" ? "Sauvé" : "Erreur"}
-            </span>
-          </div>
-          <div className="member-list">
-            {currentUserMember ? (
-              <div className="member-row">
-                <span className="avatar" style={{ background: currentUserMember.color }}>
-                  {currentUserMember.name.slice(0, 2).toUpperCase()}
-                </span>
-                <div>
-                  <strong>{currentUserMember.name}</strong>
-                  <small>{currentUserMember.role}</small>
-                </div>
-              </div>
-            ) : null}
-
-          </div>
-          <button className="secondary-btn" type="button" onClick={logout}>
-            Déconnexion
-          </button>
-        </section>
-      </aside>
-
-      <main className="main-shell">
-        <header className="board-hero" style={{ background: covers[board.cover] }}>
-          <div>
-            <p className="eyebrow light">Board</p>
-            <h2>{board.name}</h2>
-            <p>{board.description}</p>
-          </div>
-          <div className="hero-actions">
-            <button className="secondary-btn soft" type="button" onClick={() => setModal({ type: "create-list" })}>
-              Ajouter une liste
-            </button>
-            <button className="secondary-btn soft" type="button" onClick={() => setModal({ type: "archive" })}>
-              Archives
-            </button>
-            <button className="secondary-btn soft" type="button" onClick={() => renameBoard(board.id)}>
-              Renommer
-            </button>
-          </div>
-        </header>
-
-        <section className="board-stats">
-          <div>
-            <strong>{board.lists.length}</strong>
-            <span>listes</span>
-          </div>
-          <div>
-            <strong>
-              {board.lists.reduce((total, list) => total + list.cards.filter((card) => !card.archived).length, 0)}
-            </strong>
-            <span>cartes</span>
-          </div>
-          <div>
-            <strong>{workspace.activity.length}</strong>
-            <span>événements</span>
-          </div>
-        </section>
-
-        <section className="board-canvas">
-          {board.lists.map((list) => (
-            <article key={list.id} className="list-panel">
-              <div className="list-header">
-                <h3>{list.name}</h3>
-                <div className="mini-actions">
-                  <span>{filteredCards[list.id].length}</span>
-                  <button className="text-btn" type="button" onClick={() => renameList(list.id)}>
-                    Renommer
-                  </button>
-                  <button className="text-btn danger-text" type="button" onClick={() => deleteList(list.id)}>
-                    Suppr.
-                  </button>
-                </div>
-              </div>
-
-              <div
-                className="card-stack"
-                onDragOver={(event) => event.preventDefault()}
-                onDrop={(event) => {
-                  const payload = JSON.parse(event.dataTransfer.getData("application/json"));
-                  moveCard(payload.cardId, payload.fromListId, list.id);
-                }}
-              >
-                {filteredCards[list.id].map((card) => (
-                  <button
-                    key={card.id}
-                    className="card-tile"
-                    draggable
-                    onDragStart={(event) => {
-                      event.dataTransfer.setData(
-                        "application/json",
-                        JSON.stringify({ cardId: card.id, fromListId: list.id })
-                      );
-                    }}
-                    onClick={() => setModal({ type: "card", cardId: card.id })}
-                  >
-                    {card.cover ? (
-                      <span className="card-cover" style={{ background: covers[card.cover] }} />
-                    ) : null}
-                    <div className="label-row">
-                      {card.labels.map((labelId) => {
-                        const label = workspace.labels.find((item) => item.id === labelId);
-                        if (!label) return null;
-                        return (
-                          <span key={label.id} className="label-pill" style={{ background: label.color }}>
-                            {label.name}
-                          </span>
-                        );
-                      })}
-                    </div>
-                    <strong>{card.title}</strong>
-                    <p>{card.description || "Ouvre la carte pour ajouter plus de détails."}</p>
-                    <div className="card-meta">
-                      {card.dueDate ? <span>Échéance {card.dueDate}</span> : <span>Sans date</span>}
-                      <span>
-                        {card.checklist.filter((item) => item.done).length}/{card.checklist.length} tâches
-                      </span>
-                    </div>
-                  </button>
-                ))}
-              </div>
-
-              <form className="inline-form" onSubmit={(event) => createCard(event, list.id)}>
-                <input name="title" placeholder="Ajouter une carte..." />
-                <button className="primary-btn" type="submit">
-                  Ajouter
-                </button>
-              </form>
-            </article>
-          ))}
-        </section>
-      </main>
-
-      {modal?.type === "create-board" ? (
-        <Modal title="Créer un board" onClose={() => setModal(null)}>
-          <form className="modal-form" onSubmit={createBoard}>
-            <label>
-              <span>Nom</span>
-              <input name="name" required placeholder="Ex: Growth Sprint" />
-            </label>
-            <label>
-              <span>Description</span>
-              <textarea name="description" placeholder="But du board" />
-            </label>
-            <label>
-              <span>Cover</span>
-              <select name="cover" defaultValue="ocean">
-                {Object.keys(covers).map((key) => (
-                  <option key={key} value={key}>
-                    {key}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <button className="primary-btn" type="submit">
-              Créer
-            </button>
-          </form>
-        </Modal>
-      ) : null}
-
-      {modal?.type === "create-list" ? (
-        <Modal title="Ajouter une liste" onClose={() => setModal(null)}>
-          <form className="modal-form" onSubmit={createList}>
-            <label>
-              <span>Nom</span>
-              <input name="name" required placeholder="Ex: Review" />
-            </label>
-            <button className="primary-btn" type="submit">
-              Ajouter
-            </button>
-          </form>
-        </Modal>
-      ) : null}
-
-      {modal?.type === "archive" ? (
-        <Modal title="Cartes archivées" onClose={() => setModal(null)}>
-          <div className="archive-list">
-            {board.lists.flatMap((list) => list.cards.filter((card) => card.archived)).length ? (
-              board.lists.flatMap((list) =>
-                list.cards
-                  .filter((card) => card.archived)
-                  .map((card) => (
-                    <div key={card.id} className="archive-item">
-                      <strong>{card.title}</strong>
-                      <button
-                        className="secondary-btn"
-                        type="button"
-                        onClick={() => {
-                          updateCard(card.id, (draftCard) => {
-                            draftCard.archived = false;
-                          });
-                          setModal(null);
-                        }}
-                      >
-                        Restaurer
-                      </button>
-                    </div>
-                  ))
-              )
-            ) : (
-              <div className="empty-box">Aucune carte archivée sur ce board.</div>
-            )}
-          </div>
-        </Modal>
-      ) : null}
-
-      {modal?.type === "card" && currentCard ? (
-        <CardModal
-          data={currentCard}
-          workspace={workspace}
-          onClose={() => setModal(null)}
-          onUpdateCard={updateCard}
-        />
-      ) : null}
-    </div>
+    <Dashboard 
+      workspace={workspace} 
+      user={session.user}
+      onLogout={() => {
+        if (eventSourceRef.current) {
+          eventSourceRef.current.close();
+          eventSourceRef.current = null;
+        }
+        sessionStorage.removeItem("deepfocus-token");
+        setSession({ status: "guest" });
+      }}
+      onJoinWorkspace={() => {
+        // Rafraîchir après avoir rejoint un workspace
+        api.me().then((data) => {
+          setWorkspace(data.workspace);
+          setActiveBoardId(data.workspace.boards[0]?.id || null);
+        }).catch(console.error);
+      }}
+    />
   );
 }
 
