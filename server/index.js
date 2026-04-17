@@ -273,6 +273,8 @@ async function syncWorkspaceMembers(workspaceRow) {
     return empty;
   }
   
+  console.log("🔄 Syncing workspace ID:", workspaceRow.id, "invite_code:", workspaceRow.invite_code);
+  
   let workspace;
   try {
     workspace = JSON.parse(workspaceRow.data_json);
@@ -289,6 +291,8 @@ async function syncWorkspaceMembers(workspaceRow) {
   workspace.tasks = workspace.tasks || [];
   workspace.labels = workspace.labels || [];
   workspace.notifications = workspace.notifications || [];
+  
+  console.log("✅ Workspace chargé avec", workspace.boards.length, "boards");
   
   const result = await db.query(
     `SELECT u.id AS user_id, u.name, u.email, wm.role
@@ -402,13 +406,17 @@ app.post("/api/auth/register", async (req, res, next) => {
       console.warn("⚠️  GLOBAL_WORKSPACE_ID non défini, utilisation du fallback 1");
       globalWorkspaceId = 1;
     }
+    
+    console.log("📝 Enregistrement utilisateur - Workspace ID:", globalWorkspaceId);
 
     // Vérifier que le workspace existe
-    const wsCheck = await db.query("SELECT id FROM workspaces WHERE id = $1", [globalWorkspaceId]);
+    const wsCheck = await db.query("SELECT id, invite_code FROM workspaces WHERE id = $1", [globalWorkspaceId]);
     if (wsCheck.rows.length === 0) {
       console.error("❌ Workspace global introuvable (ID:", globalWorkspaceId, ")");
       return res.status(500).json({ error: "Workspace global non trouvé" });
     }
+    
+    console.log("✅ Workspace trouvé:", wsCheck.rows[0]);
 
     const passwordHash = await bcrypt.hash(password, 10);
     const userResult = await db.query(

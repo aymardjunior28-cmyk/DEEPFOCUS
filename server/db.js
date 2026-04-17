@@ -369,17 +369,23 @@ async function initializeGlobalWorkspaceFn(createDefaultWorkspaceFn) {
   if (usePostgres && pool) {
     // Mode PostgreSQL : créer/chercher le workspace global dans la base de données
     try {
-      // Nettoyer les anciens workspaces défectueux et utilisateurs
-      await pool.query("DELETE FROM workspace_members");
-      await pool.query("DELETE FROM workspaces WHERE invite_code = $1", ["GLOBAL"]);
-      const allUsers = await pool.query("SELECT id, email FROM users");
+      console.log("🔄 Nettoyage de la base de données...");
       
-      // Garder seulement l'utilisateur système
+      // Supprimer les anciennes memberships
+      await pool.query("DELETE FROM workspace_members");
+      
+      // Supprimer TOUS les anciens workspaces
+      await pool.query("DELETE FROM workspaces");
+      
+      // Supprimer tous les utilisateurs non-système
+      const allUsers = await pool.query("SELECT id, email FROM users");
       for (const user of allUsers.rows) {
         if (user.email !== "system@deepfocus.local") {
           await pool.query("DELETE FROM users WHERE id = $1", [user.id]);
         }
       }
+      
+      console.log("✅ Base de données nettoyée");
       
       // Créer ou récupérer l'utilisateur système propriétaire
       let ownerUserId = null;
@@ -409,7 +415,7 @@ async function initializeGlobalWorkspaceFn(createDefaultWorkspaceFn) {
       );
 
       const workspaceId = insertResult.rows[0].id;
-      console.log("✅ Nouveau workspace global créé en PostgreSQL (ID:", workspaceId, ")");
+      console.log("✅ Nouveau workspace global créé en PostgreSQL (ID:", workspaceId, ", invite_code: GLOBAL)");
       return workspaceId;
     } catch (err) {
       console.error("❌ Erreur création workspace global PostgreSQL:", err.message);
@@ -417,6 +423,8 @@ async function initializeGlobalWorkspaceFn(createDefaultWorkspaceFn) {
     }
   } else {
     // Mode stockage local : nettoyer et créer le workspace global
+    console.log("🔄 Nettoyage du stockage local...");
+    
     // Garder seulement l'utilisateur système
     const systemUser = store.users.find(u => u.email === "system@deepfocus.local");
     store.users = systemUser ? [systemUser] : [];
@@ -456,7 +464,7 @@ async function initializeGlobalWorkspaceFn(createDefaultWorkspaceFn) {
     store.workspaces.push(newWorkspace);
     store.nextWorkspaceId = 2;
     saveStore();
-    console.log("✅ Nouveau workspace global créé en stockage local (ID:", newWorkspace.id, ")");
+    console.log("✅ Nouveau workspace global créé en stockage local (ID: 1, invite_code: GLOBAL)");
     return newWorkspace.id;
   }
 }
