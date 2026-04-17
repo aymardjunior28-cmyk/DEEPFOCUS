@@ -40,27 +40,31 @@ function ensureDataDir() {
 }
 
 function loadStore() {
+  const defaults = {
+    users: [],
+    workspaces: [],
+    workspace_members: [],
+    nextUserId: 1,
+    nextWorkspaceId: 1
+  };
+
   if (!fs.existsSync(dbFile)) {
-    return {
-      users: [],
-      workspaces: [],
-      workspace_members: [],
-      nextUserId: 1,
-      nextWorkspaceId: 1
-    };
+    return defaults;
   }
 
   try {
-    return JSON.parse(fs.readFileSync(dbFile, "utf-8"));
+    const loaded = JSON.parse(fs.readFileSync(dbFile, "utf-8"));
+    // Fusionner avec les valeurs par défaut pour éviter les propriétés manquantes
+    return {
+      users: Array.isArray(loaded.users) ? loaded.users : defaults.users,
+      workspaces: Array.isArray(loaded.workspaces) ? loaded.workspaces : defaults.workspaces,
+      workspace_members: Array.isArray(loaded.workspace_members) ? loaded.workspace_members : defaults.workspace_members,
+      nextUserId: typeof loaded.nextUserId === "number" ? loaded.nextUserId : defaults.nextUserId,
+      nextWorkspaceId: typeof loaded.nextWorkspaceId === "number" ? loaded.nextWorkspaceId : defaults.nextWorkspaceId
+    };
   } catch (err) {
     console.warn("🟡 Impossible de lire le stockage local, réinitialisation du fichier.", err.message || err);
-    return {
-      users: [],
-      workspaces: [],
-      workspace_members: [],
-      nextUserId: 1,
-      nextWorkspaceId: 1
-    };
+    return defaults;
   }
 }
 
