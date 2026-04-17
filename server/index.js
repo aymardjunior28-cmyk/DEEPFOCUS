@@ -214,7 +214,8 @@ async function getWorkspaceRowByUserId(userId) {
 async function syncWorkspaceMembers(workspaceRow) {
   if (!workspaceRow || !workspaceRow.data_json) {
     console.warn("⚠️ Workspace invalide:", workspaceRow);
-    return { boards: [], members: [], invitations: [], activity: [], tasks: [], labels: [], notifications: [] };
+    const empty = { boards: [], members: [], invitations: [], activity: [], tasks: [], labels: [], notifications: [] };
+    return empty;
   }
   
   let workspace;
@@ -224,6 +225,16 @@ async function syncWorkspaceMembers(workspaceRow) {
     console.error("⚠️ Erreur parsing workspace JSON:", err.message);
     return { boards: [], members: [], invitations: [], activity: [], tasks: [], labels: [], notifications: [] };
   }
+  
+  // S'assurer que toutes les propriétés existent
+  workspace.boards = workspace.boards || [];
+  workspace.members = workspace.members || [];
+  workspace.invitations = workspace.invitations || [];
+  workspace.activity = workspace.activity || [];
+  workspace.tasks = workspace.tasks || [];
+  workspace.labels = workspace.labels || [];
+  workspace.notifications = workspace.notifications || [];
+  
   const result = await db.query(
     `SELECT u.id AS user_id, u.name, u.email, wm.role
      FROM workspace_members wm
@@ -330,8 +341,19 @@ app.post("/api/auth/register", async (req, res, next) => {
     const existing = await db.query("SELECT id FROM users WHERE email = $1", [safeEmail]);
     if (existing.rows.length > 0) return res.status(409).json({ error: "Cet email existe deja" });
 
-    // Utiliser le workspace global (ID = 1)
-    const globalWorkspaceId = GLOBAL_WORKSPACE_ID || 1;
+    // Utiliser le workspace global
+    let globalWorkspaceId = GLOBAL_WORKSPACE_ID;
+    if (!globalWorkspaceId) {
+      console.warn("⚠️  GLOBAL_WORKSPACE_ID non défini, utilisation du fallback 1");
+      globalWorkspaceId = 1;
+    }
+
+    // Vérifier que le workspace existe
+    const wsCheck = await db.query("SELECT id FROM workspaces WHERE id = $1", [globalWorkspaceId]);
+    if (wsCheck.rows.length === 0) {
+      console.error("❌ Workspace global introuvable (ID:", globalWorkspaceId, ")");
+      return res.status(500).json({ error: "Workspace global non trouvé" });
+    }
 
     const passwordHash = await bcrypt.hash(password, 10);
     const userResult = await db.query(
