@@ -282,19 +282,23 @@ function App() {
 
   useEffect(() => {
     const token = sessionStorage.getItem("deepfocus-token");
+    console.log("App mounted, token present:", Boolean(token));
     if (!token) {
       setSession({ status: "guest", user: null });
       return;
     }
 
+    console.log("Calling api.me() to restore session");
     api
       .me()
       .then((data) => {
+        console.log("api.me() success", data);
         setSession({ status: "ready", user: data.user });
         setWorkspace(data.workspace);
         setActiveBoardId(data.workspace.boards[0]?.id || null);
       })
-      .catch(() => {
+      .catch((error) => {
+        console.error("api.me() failed", error);
         sessionStorage.removeItem("deepfocus-token");
         setSession({ status: "guest", user: null });
       });
@@ -393,13 +397,17 @@ function App() {
 
     task
       .then((data) => {
+        console.log("Auth success", { authMode, data });
         sessionStorage.setItem("deepfocus-token", data.token);
         setSession({ status: "ready", user: data.user });
         setWorkspace(data.workspace);
         setActiveBoardId(data.workspace.boards[0]?.id || null);
         firstLoad.current = true;
       })
-      .catch((error) => setAuthError(error.message));
+      .catch((error) => {
+        console.error("Auth error", error);
+        setAuthError(error.message);
+      });
   }
 
   function logout() {
