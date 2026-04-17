@@ -35,18 +35,6 @@ app.use("/uploads", express.static(uploadsDir));
 const distDir = path.join(__dirname, "../dist");
 app.use(express.static(distDir));
 
-// Fallback route pour SPA - servir index.html pour les routes inconnues
-app.get("*", (req, res) => {
-  if (req.path.startsWith("/api")) {
-    return res.status(404).json({ error: "Route API non trouvée" });
-  }
-  res.sendFile(path.join(distDir, "index.html"), (err) => {
-    if (err) {
-      res.status(404).json({ error: "Page non trouvée" });
-    }
-  });
-});
-
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, uploadsDir),
   filename: (_req, file, cb) => {
@@ -136,12 +124,16 @@ function parseToken(token) {
 function auth(req, res, next) {
   const header = req.headers.authorization || "";
   const token = header.startsWith("Bearer ") ? header.slice(7) : null;
-  if (!token) return res.status(401).json({ error: "Token manquant" });
+  if (!token) {
+    console.warn("Auth failed: Token missing");
+    return res.status(401).json({ error: "Token manquant" });
+  }
 
   try {
     req.user = parseToken(token);
     next();
-  } catch {
+  } catch (err) {
+    console.warn("Auth failed: Token invalid", err.message);
     res.status(401).json({ error: "Token invalide" });
   }
 }
@@ -263,7 +255,29 @@ async function getWorkspaceRowByUserId(userId) {
      WHERE u.id = $1`,
     [userId]
   );
-  return result.rows[0];
+  if (result.rows.length > 0) {
+    return result.rows[0];
+  }
+
+  // Fallback : si active_workspace_id est manquant ou incorrect,
+  // utiliser le premier workspace auquel l'utilisateur appartient.
+  const fallbackResult = await db.query(
+    `SELECT w.*
+     FROM workspace_members wm
+     JOIN workspaces w ON w.id = wm.workspace_id
+     WHERE wm.user_id = $1
+     ORDER BY w.id
+     LIMIT 1`,
+    [userId]
+  );
+  if (fallbackResult.rows.length > 0) {
+    console.warn(`⚠️ Fallback workspace pour utilisateur ${userId} via membership`, {
+      workspaceId: fallbackResult.rows[0].id
+    });
+    return fallbackResult.rows[0];
+  }
+
+  return null;
 }
 
 async function syncWorkspaceMembers(workspaceRow) {
