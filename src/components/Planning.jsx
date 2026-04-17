@@ -10,6 +10,8 @@ export function PlanningView({ workspace, onTasksChange, searchQuery = "" }) {
   const [dragActive, setDragActive] = useState(false);
   const [selectedTask, setSelectedTask] = useState(null);
   const [uploadingTaskFile, setUploadingTaskFile] = useState(false);
+  const members = Array.isArray(workspace?.members) ? workspace.members.filter(Boolean) : [];
+
   const [formData, setFormData] = useState({
     title: "",
     description: "",
@@ -25,7 +27,7 @@ export function PlanningView({ workspace, onTasksChange, searchQuery = "" }) {
 
   useEffect(() => {
     if (!selectedTask) return;
-    const refreshedTask = tasks.find((task) => task.id === selectedTask.id);
+    const refreshedTask = tasks.find((task) => task && task.id === selectedTask.id);
     if (refreshedTask && refreshedTask !== selectedTask) {
       setSelectedTask(refreshedTask);
     }
@@ -44,8 +46,9 @@ export function PlanningView({ workspace, onTasksChange, searchQuery = "" }) {
         }
       });
 
-      setTasks(response.tasks || []);
-      onTasksChange?.(response.tasks || []);
+      const loadedTasks = (response.tasks || []).filter(Boolean);
+      setTasks(loadedTasks);
+      onTasksChange?.(loadedTasks);
     } catch (err) {
       console.error("Erreur chargement tâches:", err);
     }
@@ -188,10 +191,12 @@ export function PlanningView({ workspace, onTasksChange, searchQuery = "" }) {
 
   function getTasksForDate(date) {
     const query = String(searchQuery || "").trim().toLowerCase();
-    return tasks.filter(t => {
-      if (t.startDate !== date) return false;
+    return tasks.filter((task) => {
+      if (!task) return false;
+      if (task.startDate !== date) return false;
       if (!query) return true;
-      const text = `${t.title || ""} ${t.description || ""}`.toLowerCase();      return text.includes(query);
+      const text = `${task.title || ""} ${task.description || ""}`.toLowerCase();
+      return text.includes(query);
     });
   }
 
@@ -418,7 +423,7 @@ export function PlanningView({ workspace, onTasksChange, searchQuery = "" }) {
           <label>
             Assigner à
             <div className="members-checkbox">
-              {workspace?.members?.filter(m => m.userId).map(member => (
+              {members.filter(m => m.userId).map(member => (
                 <label key={member.id}>
                   <input
                     type="checkbox"
@@ -592,7 +597,7 @@ export function PlanningView({ workspace, onTasksChange, searchQuery = "" }) {
                 <div className="detail-section">
                   <h4>Assignés</h4>
                   <div className="assigned-members">
-                    {workspace?.members?.filter(m => selectedTask.assignedTo?.includes(m.id)).map(member => (
+                    {members.filter(m => selectedTask.assignedTo?.includes(m.id)).map(member => (
                       <div key={member.id} className="member-badge">
                         <span className="avatar" style={{ background: member.color || "#2563eb" }}>
                           {member.name.slice(0, 2).toUpperCase()}
@@ -612,18 +617,21 @@ export function PlanningView({ workspace, onTasksChange, searchQuery = "" }) {
 }
 
 function TaskCard({ task, workspace, onUpdate, onDelete, onSelect, compact = false }) {
-  const assignedMembers = workspace?.members?.filter(m => task.assignedTo.includes(m.id)) || [];
+  const members = Array.isArray(workspace?.members) ? workspace.members.filter(Boolean) : [];
+  const assignedTo = Array.isArray(task?.assignedTo) ? task.assignedTo : [];
+  const assignedMembers = members.filter((m) => m && assignedTo.includes(m.id));
   const priorityColors = {
     low: "#16a34a",
     medium: "#f59e0b",
     high: "#dc2626"
   };
+  const borderColor = priorityColors[task?.priority] || priorityColors.medium;
 
   if (compact) {
     return (
-      <div 
-        className="task-card-compact" 
-        style={{ borderLeft: `3px solid ${priorityColors[task.priority]}` }}
+      <div
+        className="task-card-compact"
+        style={{ borderLeft: "3px solid " + borderColor }}
         onClick={onSelect}
         role="button"
         tabIndex={0}
@@ -631,7 +639,7 @@ function TaskCard({ task, workspace, onUpdate, onDelete, onSelect, compact = fal
         <div className="task-title-compact">{task.title}</div>
         {assignedMembers.length > 0 && (
           <div className="task-members-compact">
-            {assignedMembers.map(m => (
+            {assignedMembers.map((m) => (
               <div
                 key={m.id}
                 className="member-avatar-small"
@@ -648,9 +656,9 @@ function TaskCard({ task, workspace, onUpdate, onDelete, onSelect, compact = fal
   }
 
   return (
-    <div 
-      className="task-card" 
-      style={{ borderLeft: `4px solid ${priorityColors[task.priority]}` }}
+    <div
+      className="task-card"
+      style={{ borderLeft: "4px solid " + borderColor }}
       onClick={onSelect}
       role="button"
       tabIndex={0}
@@ -672,12 +680,12 @@ function TaskCard({ task, workspace, onUpdate, onDelete, onSelect, compact = fal
         <span className="task-priority">{task.priority}</span>
         <span className="task-date">
           {new Date(task.startDate).toLocaleDateString("fr-FR")}
-          {task.endDate !== task.startDate && ` - ${new Date(task.endDate).toLocaleDateString("fr-FR")}`}
+          {task.endDate !== task.startDate && (" - " + new Date(task.endDate).toLocaleDateString("fr-FR"))}
         </span>
       </div>
       {assignedMembers.length > 0 && (
         <div className="task-members">
-          {assignedMembers.map(m => (
+          {assignedMembers.map((m) => (
             <div
               key={m.id}
               className="member-avatar"
@@ -693,7 +701,7 @@ function TaskCard({ task, workspace, onUpdate, onDelete, onSelect, compact = fal
         <input
           type="checkbox"
           checked={task.completed}
-          onChange={e => onUpdate(task.id, { completed: e.target.checked })}
+          onChange={(e) => onUpdate(task.id, { completed: e.target.checked })}
         />
         Marquer comme complétée
       </label>

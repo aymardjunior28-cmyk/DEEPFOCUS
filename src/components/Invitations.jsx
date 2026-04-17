@@ -66,9 +66,9 @@ export function InvitationsManager({ workspace }) {
       setLoading(false);
     }
   }
-
-  const memberCount = workspace?.members?.filter(m => m.userId).length || 0;
-  const canInvite = workspace?.members?.find(m => m.userId);
+  const members = Array.isArray(workspace?.members) ? workspace.members.filter(Boolean) : [];
+  const memberCount = members.filter((m) => m.userId).length;
+  const canInvite = members.find((m) => m.userId);
   const onlineUserIds = workspace?.onlineUserIds || [];
 
   return (
@@ -85,7 +85,7 @@ export function InvitationsManager({ workspace }) {
 
           <div className="members-list">
             <h4>Membres actuels</h4>
-            {workspace?.members?.map(member => {
+            {members.map(member => {
               const isOnline = onlineUserIds.includes(member.userId);
               return (
                 <div key={member.id} className="member-item">

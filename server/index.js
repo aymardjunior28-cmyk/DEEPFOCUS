@@ -10,7 +10,11 @@ import db, { initializeGlobalWorkspace } from "./db.js";
 
 const app = express();
 const PORT = process.env.PORT || 3001;
-const JWT_SECRET = process.env.JWT_SECRET || "deepfocus-local-secret";
+const JWT_SECRET = process.env.JWT_SECRET || (process.env.NODE_ENV === "production" ? undefined : "deepfocus-dev-secret");
+if (!JWT_SECRET && process.env.NODE_ENV === "production") {
+  console.error("⚠️  JWT_SECRET doit être défini en production");
+  process.exit(1);
+}
 const MAX_ADDITIONAL_USERS = 5;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const uploadsDir = process.env.APP_UPLOADS_DIR || path.join(__dirname, "uploads");
@@ -515,7 +519,11 @@ app.post("/api/attachments", auth, withCurrentWorkspace, upload.single("file"), 
     }
 
     if (!attached) {
-      fs.unlinkSync(req.file.path);
+      try {
+        fs.unlinkSync(req.file.path);
+      } catch (err) {
+        console.warn("Impossible de supprimer le fichier:", err.message);
+      }
       return res.status(404).json({ error: "Carte introuvable" });
     }
 
@@ -693,10 +701,12 @@ app.get("/api/tasks", auth, withCurrentWorkspace, async (req, res, next) => {
     if (view === "day" && startDate) {
       tasks = tasks.filter(t => t.startDate === startDate);
     } else if (view === "week" && startDate && endDate) {
-      tasks = tasks.filter(t => t.startDate >= startDate && t.startDate <= endDate);
+      const start = new Date(startDate).toISOString().split('T')[0];
+      const end = new Date(endDate).toISOString().split('T')[0];
+      tasks = tasks.filter(t => t.startDate >= start && t.startDate <= end);
     } else if (view === "month" && startDate) {
       const month = startDate.substring(0, 7);
-      tasks = tasks.filter(t => t.startDate.substring(0, 7) === month);
+      tasks = tasks.filter(t => t.startDate?.substring(0, 7) === month);
     }
 
     res.json({ tasks });
@@ -951,10 +961,10 @@ app.use((error, _req, res, _next) => {
   res.status(500).json({ error: String(error) || "Erreur serveur" });
 });
 
-// Initialiser le workspace global au démarrage
 async function initServer() {
   try {
     GLOBAL_WORKSPACE_ID = await initializeGlobalWorkspace(createDefaultWorkspace);
+    console.log("✅ Workspace global initialisé (ID:", GLOBAL_WORKSPACE_ID, ")");
   } catch (err) {
     console.error("⚠️  Erreur initialisation workspace global:", err.message);
     GLOBAL_WORKSPACE_ID = 1;

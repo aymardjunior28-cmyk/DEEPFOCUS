@@ -9,27 +9,28 @@ export function Dashboard({ workspace, user, onLogout, onJoinWorkspace }) {
   const [tasks, setTasks] = useState([]);
   const [showNotifications, setShowNotifications] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  // Note: modal state removed - use activeTab for navigation instead
 
-  const isOwner = workspace?.members?.find((m) => m.userId === user?.id)?.role === "Owner";
+  const members = Array.isArray(workspace?.members) ? workspace.members.filter(Boolean) : [];
+  const isOwner = members.find((m) => m.userId === user?.id)?.role === "Owner";
+  const memberCount = members.filter((m) => m.userId).length;
 
   async function handleDeleteAccount() {
-    if (!window.confirm("⚠️ Êtes-vous sûr ? Cela supprimera DÉFINITIVEMENT votre compte et toutes vos données.")) {
+    if (!window.confirm("Etes-vous sur ? Cela supprimera definitivement votre compte et toutes vos donnees.")) {
       return;
     }
-    if (!window.confirm("Confirmez-vous vraiment ? C'est irréversible.")) {
+    if (!window.confirm("Confirmez-vous vraiment ? C'est irreversible.")) {
       return;
     }
 
     try {
       await api.deleteAccount();
-      window.alert("✅ Compte supprimé avec succès.");
+      window.alert("Compte supprime avec succes.");
       onLogout();
     } catch (error) {
-      window.alert(`❌ Erreur : ${error.message}`);
+      window.alert("Erreur : " + String(error?.message || error || ""));
     }
   }
-
-  const memberCount = workspace?.members?.filter((m) => m.userId).length || 0;
 
   return (
     <div className="store-shell">
@@ -46,7 +47,7 @@ export function Dashboard({ workspace, user, onLogout, onJoinWorkspace }) {
 
         <nav className="store-nav" aria-label="Navigation">
           <button
-            className={`store-nav-btn ${activeTab === "planning" ? "active" : ""}`}
+            className={"store-nav-btn " + (activeTab === "planning" ? "active" : "")}
             onClick={() => setActiveTab("planning")}
             type="button"
             title="Planning"
@@ -57,7 +58,7 @@ export function Dashboard({ workspace, user, onLogout, onJoinWorkspace }) {
             <span className="store-nav-label">Planning</span>
           </button>
           <button
-            className={`store-nav-btn ${activeTab === "invitations" ? "active" : ""}`}
+            className={"store-nav-btn " + (activeTab === "invitations" ? "active" : "")}
             onClick={() => setActiveTab("invitations")}
             type="button"
             title="Membres"
@@ -71,14 +72,14 @@ export function Dashboard({ workspace, user, onLogout, onJoinWorkspace }) {
 
         <div className="store-sidebar-bottom">
           <button
-            className={`store-icon-btn ${showNotifications ? "active" : ""}`}
+            className={"store-icon-btn " + (showNotifications ? "active" : "")}
             onClick={() => setShowNotifications(!showNotifications)}
             type="button"
             title="Notifications"
           >
             🔔
           </button>
-          <button className="store-icon-btn" onClick={onLogout} type="button" title="Déconnexion">
+          <button className="store-icon-btn" onClick={onLogout} type="button" title="Deconnexion">
             ⎋
           </button>
           <button className="store-icon-btn danger" onClick={handleDeleteAccount} type="button" title="Supprimer le compte">
@@ -96,7 +97,7 @@ export function Dashboard({ workspace, user, onLogout, onJoinWorkspace }) {
             <input
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Rechercher des tâches, des descriptions…"
+              placeholder="Rechercher des taches, des descriptions..."
               aria-label="Rechercher"
             />
           </div>
@@ -119,10 +120,10 @@ export function Dashboard({ workspace, user, onLogout, onJoinWorkspace }) {
             <section className="store-hero store-hero-primary">
               <div className="store-hero-body">
                 <h2>Workspace collaboratif</h2>
-                <p>Tous les membres travaillent sur le même espace en temps réel.</p>
+                <p>Tous les membres travaillent sur le meme espace en temps reel.</p>
                 <div className="store-hero-actions">
                   <button className="secondary-btn soft" type="button" onClick={onJoinWorkspace}>
-                    Rejoindre / Rafraîchir
+                    Rejoindre / Rafraichir
                   </button>
                 </div>
               </div>
@@ -133,15 +134,15 @@ export function Dashboard({ workspace, user, onLogout, onJoinWorkspace }) {
                 </div>
                 <div className="store-hero-kpi">
                   <strong>{tasks.length}</strong>
-                  <small>Tâches (vue)</small>
+                  <small>Taches (vue)</small>
                 </div>
               </div>
             </section>
 
             <section className="store-hero store-hero-secondary">
               <div className="store-hero-body">
-                <h2>Centre de productivité</h2>
-                <p>Filtre par recherche, gère les assignations, et suis les notifications.</p>
+                <h2>Centre de productivite</h2>
+                <p>Recherche, assignations et notifications en un seul endroit.</p>
                 <div className="store-hero-actions">
                   <button className="secondary-btn soft" type="button" onClick={() => setShowNotifications(true)}>
                     Ouvrir les notifications

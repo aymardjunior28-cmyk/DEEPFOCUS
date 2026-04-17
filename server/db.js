@@ -292,6 +292,19 @@ async function query(sql, params = []) {
   return jsonQuery(sql, params);
 }
 
+async function initializeGlobalWorkspace() {
+  try {
+    usePostgres = await initPostgres();
+    if (!usePostgres) {
+      console.log("🟢 Mode stockage local activé");
+    } else {
+      console.log("🟢 PostgreSQL connecté");
+    }
+  } catch (err) {
+    console.error("Erreur initialisation:", err);
+  }
+}
+
 export default {
   query
 };
@@ -334,8 +347,8 @@ await (async () => {
   }
 })();
 
-// Exporter une fonction pour initialiser le workspace global
-export async function initializeGlobalWorkspace(createDefaultWorkspaceFn) {
+// Initialiser le workspace global au démarrage
+async function initializeGlobalWorkspaceFn(createDefaultWorkspaceFn) {
   // Vérifier si un workspace global existe déjà
   const globalWkspace = store.workspaces.find(w => w.invite_code === "GLOBAL");
   
@@ -359,3 +372,5 @@ export async function initializeGlobalWorkspace(createDefaultWorkspaceFn) {
     return globalWkspace.id;
   }
 }
+
+export { initializeGlobalWorkspaceFn as initializeGlobalWorkspace };

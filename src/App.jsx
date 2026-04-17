@@ -82,7 +82,7 @@ function CardModal({ data, workspace, onClose, onUpdateCard, onWorkspaceUpdate }
                     onChange={(event) =>
                       onUpdateCard(card.id, (draftCard) => {
                         const target = draftCard.checklist.find((entry) => entry.id === item.id);
-                        target.done = event.target.checked;
+                        if (target) target.done = event.target.checked;
                       })
                     }
                   />
@@ -276,7 +276,6 @@ function App() {
   const [labelFilter, setLabelFilter] = useState("");
   const [authMode, setAuthMode] = useState("login");
   const [authError, setAuthError] = useState("");
-  const [modal, setModal] = useState(null);
   const [saveState, setSaveState] = useState("saved");
   const firstLoad = useRef(true);
   const eventSourceRef = useRef(null);
@@ -411,7 +410,6 @@ function App() {
     sessionStorage.removeItem("deepfocus-token");
     setWorkspace(null);
     setSession({ status: "guest", user: null });
-    setModal(null);
   }
 
   function handleDeleteAccount() {
@@ -514,7 +512,6 @@ function App() {
     };
     updateWorkspace((draft) => draft.boards.unshift(newBoard));
     setActiveBoardId(newBoard.id);
-    setModal(null);
   }
 
   function createList(event) {
@@ -528,7 +525,6 @@ function App() {
         cards: []
       });
     });
-    setModal(null);
   }
 
   function renameBoard(boardId) {
