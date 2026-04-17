@@ -312,7 +312,7 @@ async function responseForUser(user) {
   return {
     user: { id: user.id, name: user.name, email: user.email, activeWorkspaceId: workspaceRow.id },
     workspace,
-    inviteCode: workspaceRow.invite_code
+    inviteCode: workspaceRow.invite_code || null
   };
 }
 
@@ -1004,14 +1004,17 @@ async function initServer() {
     console.log("✅ Workspace global initialisé (ID:", GLOBAL_WORKSPACE_ID, ")");
     
     // Vérifier qu'il existe dans la DB
-    const checkResult = await db.query("SELECT id FROM workspaces WHERE id = $1", [GLOBAL_WORKSPACE_ID]);
+    const checkResult = await db.query("SELECT id, invite_code FROM workspaces WHERE id = $1", [GLOBAL_WORKSPACE_ID]);
     if (checkResult.rows.length === 0) {
-      console.warn("⚠️  Workspace global introuvable, utilisation de fallback ID=1");
-      GLOBAL_WORKSPACE_ID = 1;
+      console.error("❌ Workspace global (ID:", GLOBAL_WORKSPACE_ID, ") introuvable après création");
+      throw new Error("Impossible de créer le workspace global");
     }
+    
+    const wsRow = checkResult.rows[0];
+    console.log("✅ Workspace global vérifié dans la DB - ID:", wsRow.id, ", invite_code:", wsRow.invite_code);
   } catch (err) {
-    console.error("⚠️  Erreur initialisation workspace global:", err.message);
-    GLOBAL_WORKSPACE_ID = 1;
+    console.error("❌ Erreur initialisation workspace global:", err.message);
+    process.exit(1);
   }
 }
 

@@ -353,27 +353,57 @@ await (async () => {
 
 // Initialiser le workspace global au démarrage
 async function initializeGlobalWorkspaceFn(createDefaultWorkspaceFn) {
-  // Vérifier si un workspace global existe déjà
-  const globalWkspace = store.workspaces.find(w => w.invite_code === "GLOBAL");
-  
-  if (!globalWkspace) {
-    // Créer le workspace global
-    const newWorkspace = {
-      id: store.nextWorkspaceId++,
-      owner_user_id: null,
-      invite_code: "GLOBAL",
-      data_json: JSON.stringify(createDefaultWorkspaceFn("DeepFocus Collaboratif")),
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString()
-    };
-    
-    store.workspaces.push(newWorkspace);
-    saveStore();
-    console.log("✅ Workspace global créé (ID:", newWorkspace.id, ")");
-    return newWorkspace.id;
+  if (usePostgres && pool) {
+    // Mode PostgreSQL : créer/chercher le workspace global dans la base de données
+    try {
+      // Vérifier si un workspace global existe déjà
+      const result = await pool.query(
+        "SELECT id FROM workspaces WHERE invite_code = $1",
+        ["GLOBAL"]
+      );
+
+      if (result.rows.length > 0) {
+        console.log("✅ Workspace global trouvé en PostgreSQL (ID:", result.rows[0].id, ")");
+        return result.rows[0].id;
+      }
+
+      // Créer le workspace global
+      const dataJson = JSON.stringify(createDefaultWorkspaceFn("DeepFocus Collaboratif"));
+      const insertResult = await pool.query(
+        "INSERT INTO workspaces (owner_user_id, invite_code, data_json, updated_at) VALUES ($1, $2, $3, NOW()) RETURNING id",
+        [null, "GLOBAL", dataJson]
+      );
+
+      const workspaceId = insertResult.rows[0].id;
+      console.log("✅ Workspace global créé en PostgreSQL (ID:", workspaceId, ")");
+      return workspaceId;
+    } catch (err) {
+      console.error("❌ Erreur création workspace global PostgreSQL:", err.message);
+      throw err;
+    }
   } else {
-    console.log("✅ Workspace global trouvé (ID:", globalWkspace.id, ")");
-    return globalWkspace.id;
+    // Mode stockage local : créer/chercher le workspace global dans le store
+    const globalWkspace = store.workspaces.find(w => w.invite_code === "GLOBAL");
+    
+    if (!globalWkspace) {
+      // Créer le workspace global
+      const newWorkspace = {
+        id: store.nextWorkspaceId++,
+        owner_user_id: null,
+        invite_code: "GLOBAL",
+        data_json: JSON.stringify(createDefaultWorkspaceFn("DeepFocus Collaboratif")),
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      };
+      
+      store.workspaces.push(newWorkspace);
+      saveStore();
+      console.log("✅ Workspace global créé en stockage local (ID:", newWorkspace.id, ")");
+      return newWorkspace.id;
+    } else {
+      console.log("✅ Workspace global trouvé en stockage local (ID:", globalWkspace.id, ")");
+      return globalWkspace.id;
+    }
   }
 }
 
