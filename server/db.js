@@ -379,11 +379,30 @@ async function initializeGlobalWorkspaceFn(createDefaultWorkspaceFn) {
         return result.rows[0].id;
       }
 
+      // Créer ou récupérer l'utilisateur système propriétaire
+      let ownerUserId = null;
+      const systemUserCheck = await pool.query(
+        "SELECT id FROM users WHERE email = $1",
+        ["system@deepfocus.local"]
+      );
+      
+      if (systemUserCheck.rows.length > 0) {
+        ownerUserId = systemUserCheck.rows[0].id;
+      } else {
+        const passwordHash = await import("bcrypt").then(m => m.default.hash("system-password", 10));
+        const userResult = await pool.query(
+          "INSERT INTO users (name, email, password_hash, active_workspace_id) VALUES ($1, $2, $3, $4) RETURNING id",
+          ["System", "system@deepfocus.local", passwordHash, null]
+        );
+        ownerUserId = userResult.rows[0].id;
+        console.log("✅ Utilisateur système créé (ID:", ownerUserId, ")");
+      }
+
       // Créer le workspace global
       const dataJson = JSON.stringify(createDefaultWorkspaceFn("DeepFocus Collaboratif"));
       const insertResult = await pool.query(
         "INSERT INTO workspaces (owner_user_id, invite_code, data_json, updated_at) VALUES ($1, $2, $3, NOW()) RETURNING id",
-        [null, "GLOBAL", dataJson]
+        [ownerUserId, "GLOBAL", dataJson]
       );
 
       const workspaceId = insertResult.rows[0].id;
@@ -398,10 +417,27 @@ async function initializeGlobalWorkspaceFn(createDefaultWorkspaceFn) {
     const globalWkspace = store.workspaces.find(w => w.invite_code === "GLOBAL");
     
     if (!globalWkspace) {
+      // Créer ou récupérer l'utilisateur système propriétaire
+      let ownerUserId = null;
+      const systemUser = store.users.find(u => u.email === "system@deepfocus.local");
+      if (systemUser) {
+        ownerUserId = systemUser.id;
+      } else {
+        ownerUserId = store.nextUserId++;
+        store.users.push({
+          id: ownerUserId,
+          name: "System",
+          email: "system@deepfocus.local",
+          password_hash: "system-password",
+          active_workspace_id: null,
+          created_at: new Date().toISOString()
+        });
+      }
+      
       // Créer le workspace global
       const newWorkspace = {
         id: store.nextWorkspaceId++,
-        owner_user_id: null,
+        owner_user_id: ownerUserId,
         invite_code: "GLOBAL",
         data_json: JSON.stringify(createDefaultWorkspaceFn("DeepFocus Collaboratif")),
         created_at: new Date().toISOString(),
