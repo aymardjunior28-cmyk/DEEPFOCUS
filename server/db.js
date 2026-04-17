@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
+import bcrypt from "bcrypt";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const dataDir = process.env.APP_DATA_DIR || path.join(__dirname, "data");
@@ -389,7 +390,7 @@ async function initializeGlobalWorkspaceFn(createDefaultWorkspaceFn) {
       if (systemUserCheck.rows.length > 0) {
         ownerUserId = systemUserCheck.rows[0].id;
       } else {
-        const passwordHash = await import("bcrypt").then(m => m.default.hash("system-password", 10));
+        const passwordHash = await bcrypt.hash("system-password", 10);
         const userResult = await pool.query(
           "INSERT INTO users (name, email, password_hash, active_workspace_id) VALUES ($1, $2, $3, $4) RETURNING id",
           ["System", "system@deepfocus.local", passwordHash, null]
