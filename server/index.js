@@ -170,40 +170,85 @@ function createDefaultWorkspace(name) {
     tasks: [],
     invitations: [],
     notifications: [],
-    activity: [{ id: createId("activity"), text: "Workspace created", createdAt: new Date().toISOString() }],
+    activity: [{ id: createId("activity"), text: "Workspace créé", createdAt: new Date().toISOString() }],
     boards: [
       {
         id: createId("board"),
-        name: "Product Launch",
-        description: "Shared launch board with real-time sync.",
-        cover: "sunset",
+        name: "📊 Dashboard",
+        description: "Vue d'ensemble de vos projets et progressions",
+        cover: "#0f766e",
         favorite: true,
         lists: [
           {
             id: createId("list"),
-            name: "Backlog",
+            name: "Projets Actifs",
             cards: [
               {
                 id: createId("card"),
-                title: "Prepare landing page",
-                description: "Hero, CTA and responsive polish.",
-                dueDate: addDays(2),
-                labels: [labels[0].id, labels[4].id],
+                title: "🚀 Bienvenue dans DeepFocus",
+                description: "Commencez par créer votre premier projet ou tâche. Cliquez sur les boutons \"+\" pour ajouter du contenu.",
+                dueDate: addDays(7),
+                labels: [labels[0].id],
                 members: [ownerMemberId],
-                cover: "sunset",
-                checklist: [
-                  { id: createId("check"), text: "Hero copy", done: true },
-                  { id: createId("check"), text: "Mobile layout", done: false }
-                ],
+                cover: "#0f766e",
+                checklist: [],
                 comments: [],
                 attachments: [],
                 archived: false,
                 createdAt: new Date().toISOString()
               }
             ]
-          },
-          { id: createId("list"), name: "In Progress", cards: [] },
-          { id: createId("list"), name: "Done", cards: [] }
+          }
+        ]
+      },
+      {
+        id: createId("board"),
+        name: "📋 Tâches",
+        description: "Gérez vos tâches et votre planning",
+        cover: "#2563eb",
+        favorite: true,
+        lists: [
+          { id: createId("list"), name: "À Faire", cards: [] },
+          { id: createId("list"), name: "En Cours", cards: [] },
+          { id: createId("list"), name: "Terminées", cards: [] }
+        ]
+      },
+      {
+        id: createId("board"),
+        name: "🎨 Design",
+        description: "Prototypes et ressources visuelles",
+        cover: "#8b5cf6",
+        favorite: false,
+        lists: [
+          { id: createId("list"), name: "Concepts", cards: [] },
+          { id: createId("list"), name: "En Révision", cards: [] },
+          { id: createId("list"), name: "Approuvé", cards: [] }
+        ]
+      },
+      {
+        id: createId("board"),
+        name: "🔧 Développement",
+        description: "Suivi du développement technique",
+        cover: "#2563eb",
+        favorite: false,
+        lists: [
+          { id: createId("list"), name: "Backlog", cards: [] },
+          { id: createId("list"), name: "Sprint Actif", cards: [] },
+          { id: createId("list"), name: "Code Review", cards: [] },
+          { id: createId("list"), name: "Déployé", cards: [] }
+        ]
+      },
+      {
+        id: createId("board"),
+        name: "📈 Marketing",
+        description: "Campagnes et stratégies marketing",
+        cover: "#ea580c",
+        favorite: false,
+        lists: [
+          { id: createId("list"), name: "Idées", cards: [] },
+          { id: createId("list"), name: "En Préparation", cards: [] },
+          { id: createId("list"), name: "En Cours", cards: [] },
+          { id: createId("list"), name: "Analysé", cards: [] }
         ]
       }
     ]
