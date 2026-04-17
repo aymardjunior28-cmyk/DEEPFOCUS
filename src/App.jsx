@@ -293,9 +293,10 @@ function App() {
       .me()
       .then((data) => {
         console.log("api.me() success", data);
+        const restoredWorkspace = data.workspace || { boards: [], members: [], invitations: [], notifications: [], activity: [], tasks: [], labels: [] };
         setSession({ status: "ready", user: data.user });
-        setWorkspace(data.workspace);
-        setActiveBoardId(data.workspace.boards[0]?.id || null);
+        setWorkspace(restoredWorkspace);
+        setActiveBoardId(restoredWorkspace.boards?.[0]?.id || null);
       })
       .catch((error) => {
         console.error("api.me() failed", error);
@@ -353,8 +354,11 @@ function App() {
     return () => clearTimeout(timeout);
   }, [workspace, session.status]);
 
-  const board = workspace?.boards.find((item) => item.id === activeBoardId) || workspace?.boards[0];
-  const realMembers = workspace?.members.filter((member) => member.userId) || [];
+  const safeBoards = Array.isArray(workspace?.boards) ? workspace.boards : [];
+  const safeMembers = Array.isArray(workspace?.members) ? workspace.members : [];
+  const board = safeBoards.find((item) => item.id === activeBoardId) || safeBoards[0] || { id: null, name: "", description: "", cover: "", favorite: false, lists: [] };
+  const boardLists = Array.isArray(board.lists) ? board.lists : [];
+  const realMembers = safeMembers.filter((member) => member.userId) || [];
   const currentUserMember = realMembers.find((member) => member.userId === session.user?.id);
 
   useEffect(() => {
@@ -400,8 +404,19 @@ function App() {
         console.log("Auth success", { authMode, data });
         sessionStorage.setItem("deepfocus-token", data.token);
         setSession({ status: "ready", user: data.user });
-        setWorkspace(data.workspace);
-        setActiveBoardId(data.workspace.boards[0]?.id || null);
+        const workspace = data.workspace || {
+          id: null,
+          name: "Global",
+          boards: [],
+          members: [],
+          invitations: [],
+          activity: [],
+          tasks: [],
+          labels: [],
+          notifications: []
+        };
+        setWorkspace(workspace);
+        setActiveBoardId(workspace.boards[0]?.id || null);
         firstLoad.current = true;
       })
       .catch((error) => {
@@ -446,7 +461,7 @@ function App() {
     return <div className="screen-state">Chargement de l'application...</div>;
   }
 
-  if (session.status !== "ready" || !workspace) {
+  if (session.status !== "ready" || workspace === null) {
     return (
       <div className="auth-shell">
         <div className="auth-panel brand">
@@ -492,15 +507,17 @@ function App() {
   }
 
   const filteredCards = {};
-  for (const list of board.lists) {
-    filteredCards[list.id] = list.cards.filter((card) => {
-      const text = `${card.title} ${card.description}`.toLowerCase();
-      if (search && !text.includes(search.toLowerCase())) return false;
-      if (memberFilter && !card.members.includes(memberFilter)) return false;
-      if (labelFilter && !card.labels.includes(labelFilter)) return false;
-      if (card.archived) return false;
-      return true;
-    });
+  for (const list of boardLists) {
+    filteredCards[list.id] = Array.isArray(list.cards)
+      ? list.cards.filter((card) => {
+          const text = `${card.title} ${card.description}`.toLowerCase();
+          if (search && !text.includes(search.toLowerCase())) return false;
+          if (memberFilter && !card.members.includes(memberFilter)) return false;
+          if (labelFilter && !card.labels.includes(labelFilter)) return false;
+          if (card.archived) return false;
+          return true;
+        })
+      : [];
   }
 
   function createBoard(event) {
