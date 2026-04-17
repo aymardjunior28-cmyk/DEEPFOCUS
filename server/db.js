@@ -275,6 +275,12 @@ function jsonQuery(sql, params = []) {
     return { rows: workspace ? [workspace] : [] };
   }
 
+  if (normalized.startsWith("SELECT id, invite_code FROM workspaces WHERE id = $1")) {
+    const workspaceId = params[0];
+    const workspace = store.workspaces.find((item) => String(item.id) === String(workspaceId));
+    return { rows: workspace ? [{ id: workspace.id, invite_code: workspace.invite_code }] : [] };
+  }
+
   if (normalized.startsWith("UPDATE workspaces SET data_json = $1, updated_at = NOW() WHERE id = $2")) {
     const [dataJson, workspaceId] = params;
     const workspace = store.workspaces.find((item) => String(item.id) === String(workspaceId));
