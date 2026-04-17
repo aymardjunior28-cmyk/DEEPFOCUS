@@ -278,8 +278,10 @@ async function syncWorkspaceMembers(workspaceRow) {
   let workspace;
   try {
     workspace = JSON.parse(workspaceRow.data_json);
+    console.log("✅ JSON parsé avec succès. Boards count:", workspace.boards?.length || 0);
   } catch (err) {
     console.error("⚠️ Erreur parsing workspace JSON:", err.message);
+    console.error("Data_json preview:", workspaceRow.data_json.substring(0, 200));
     return { boards: [], members: [], invitations: [], activity: [], tasks: [], labels: [], notifications: [] };
   }
   
@@ -367,7 +369,13 @@ async function responseForUser(user) {
       inviteCode: null
     };
   }
+  
+  console.log("📦 WorkspaceRow pour l'utilisateur", user.id, ":", { id: workspaceRow.id, invite_code: workspaceRow.invite_code });
+  
   const workspace = await syncWorkspaceMembers(workspaceRow);
+  
+  console.log("✅ Workspace chargé avec", workspace.boards?.length || 0, "boards pour l'utilisateur", user.id);
+  
   return {
     user: { id: user.id, name: user.name, email: user.email, activeWorkspaceId: workspaceRow.id },
     workspace,
