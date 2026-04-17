@@ -31,11 +31,21 @@ app.use(cors());
 app.use(express.json({ limit: "4mb" }));
 app.use("/uploads", express.static(uploadsDir));
 
-// Servir le build React en production
-if (process.env.NODE_ENV === "production") {
-  const distDir = path.join(__dirname, "../dist");
-  app.use(express.static(distDir));
-}
+// Servir le build React
+const distDir = path.join(__dirname, "../dist");
+app.use(express.static(distDir));
+
+// Fallback route pour SPA - servir index.html pour les routes inconnues
+app.get("*", (req, res) => {
+  if (req.path.startsWith("/api")) {
+    return res.status(404).json({ error: "Route API non trouvée" });
+  }
+  res.sendFile(path.join(distDir, "index.html"), (err) => {
+    if (err) {
+      res.status(404).json({ error: "Page non trouvée" });
+    }
+  });
+});
 
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, uploadsDir),
