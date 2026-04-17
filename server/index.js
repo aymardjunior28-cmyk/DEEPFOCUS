@@ -214,10 +214,16 @@ async function getWorkspaceRowByUserId(userId) {
 async function syncWorkspaceMembers(workspaceRow) {
   if (!workspaceRow || !workspaceRow.data_json) {
     console.warn("⚠️ Workspace invalide:", workspaceRow);
-    return { boards: [], members: [], invitations: [], activity: [] };
+    return { boards: [], members: [], invitations: [], activity: [], tasks: [], labels: [], notifications: [] };
   }
   
-  const workspace = JSON.parse(workspaceRow.data_json);
+  let workspace;
+  try {
+    workspace = JSON.parse(workspaceRow.data_json);
+  } catch (err) {
+    console.error("⚠️ Erreur parsing workspace JSON:", err.message);
+    return { boards: [], members: [], invitations: [], activity: [], tasks: [], labels: [], notifications: [] };
+  }
   const result = await db.query(
     `SELECT u.id AS user_id, u.name, u.email, wm.role
      FROM workspace_members wm
@@ -283,6 +289,14 @@ async function broadcastWorkspace(workspaceId) {
 
 async function responseForUser(user) {
   const workspaceRow = await getWorkspaceRowByUserId(user.id);
+  if (!workspaceRow) {
+    console.error("⚠️  Workspace non trouvé pour l'utilisateur:", user.id);
+    return {
+      user: { id: user.id, name: user.name, email: user.email, activeWorkspaceId: null },
+      workspace: { boards: [], members: [], invitations: [], notifications: [], activity: [], tasks: [], labels: [] },
+      inviteCode: null
+    };
+  }
   const workspace = await syncWorkspaceMembers(workspaceRow);
   return {
     user: { id: user.id, name: user.name, email: user.email, activeWorkspaceId: workspaceRow.id },
@@ -963,8 +977,16 @@ app.use((error, _req, res, _next) => {
 
 async function initServer() {
   try {
+    // Initialiser le workspace global
     GLOBAL_WORKSPACE_ID = await initializeGlobalWorkspace(createDefaultWorkspace);
     console.log("✅ Workspace global initialisé (ID:", GLOBAL_WORKSPACE_ID, ")");
+    
+    // Vérifier qu'il existe dans la DB
+    const checkResult = await db.query("SELECT id FROM workspaces WHERE id = $1", [GLOBAL_WORKSPACE_ID]);
+    if (checkResult.rows.length === 0) {
+      console.warn("⚠️  Workspace global introuvable, utilisation de fallback ID=1");
+      GLOBAL_WORKSPACE_ID = 1;
+    }
   } catch (err) {
     console.error("⚠️  Erreur initialisation workspace global:", err.message);
     GLOBAL_WORKSPACE_ID = 1;
